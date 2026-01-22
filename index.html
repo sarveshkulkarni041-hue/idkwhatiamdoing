@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Procedural 3D Racer Prototype</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="hud">
+      <div class="hud__title">Regenerative Open World Racer (Prototype)</div>
+      <div class="hud__metrics">
+        <span>Speed: <strong id="speed">0</strong> km/h</span>
+        <span>Gear: <strong id="gear">1</strong></span>
+        <span>Grip: <strong id="grip">0.0</strong></span>
+        <span>Biome: <strong id="biome">-</strong></span>
+      </div>
+      <div class="hud__tips">
+        <div>W/S: throttle & brake · A/D: steer · Shift: handbrake · R: reset</div>
+        <div>Open world tiles are generated on the fly around the car.</div>
+      </div>
+    </div>
+    <canvas id="scene"></canvas>
+    <script src="main.js"></script>
+  </body>
+</html>
