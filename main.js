@@ -3,7 +3,10 @@ const ctx = canvas.getContext("2d");
 
 const hudSpeed = document.getElementById("speed");
 const hudGear = document.getElementById("gear");
+const hudRpm = document.getElementById("rpm");
 const hudGrip = document.getElementById("grip");
+const hudSlip = document.getElementById("slip");
+const hudYaw = document.getElementById("yaw");
 const hudBiome = document.getElementById("biome");
 
 const input = {
@@ -23,9 +26,10 @@ const car = {
   position: { x: 0, y: 0 },
   velocity: { x: 0, y: 0 },
   heading: 0,
+  yawRate: 0,
   wheelBase: 2.7,
+  trackWidth: 1.6,
   mass: 1350,
-  engineForce: 8200,
   brakeForce: 11000,
   drag: 0.42,
   rollingResistance: 12,
@@ -33,13 +37,21 @@ const car = {
   gear: 1,
 };
 
-const gears = [
-  { ratio: 2.8, max: 60 },
-  { ratio: 2.1, max: 110 },
-  { ratio: 1.6, max: 160 },
-  { ratio: 1.2, max: 220 },
-  { ratio: 1.0, max: 280 },
-];
+const drivetrain = {
+  finalDrive: 3.42,
+  gearbox: [2.8, 2.1, 1.6, 1.2, 1.0],
+  idleRpm: 900,
+  redlineRpm: 7200,
+  wheelRadius: 0.34,
+  drivetrainEfficiency: 0.88,
+};
+
+const torqueCurve = (rpm) => {
+  const normalized = clamp((rpm - drivetrain.idleRpm) / (drivetrain.redlineRpm - drivetrain.idleRpm), 0, 1);
+  const peak = 420;
+  const curve = 1 - Math.pow(normalized - 0.55, 2) * 2.4;
+  return peak * clamp(curve, 0.4, 1.02);
+};
 
 const biomes = [
   { name: "Coastal", color: [42, 86, 120] },
@@ -119,6 +131,7 @@ const resetCar = () => {
   car.position = { x: 0, y: 0 };
   car.velocity = { x: 0, y: 0 };
   car.heading = 0;
+  car.yawRate = 0;
 };
 
 window.addEventListener("keydown", (event) => updateInput(event.code, true));
@@ -145,49 +158,75 @@ const updatePhysics = (dt) => {
     y: forward.x,
   };
 
+  const forwardSpeed = car.velocity.x * forward.x + car.velocity.y * forward.y;
+  const lateralSpeed = car.velocity.x * lateral.x + car.velocity.y * lateral.y;
   const steerAngle = input.steer * car.maxSteer;
-  const traction = input.throttle * car.engineForce;
-  const braking = input.brake * car.brakeForce;
+
+  const gearRatio = drivetrain.gearbox[car.gear - 1] * drivetrain.finalDrive;
+  const wheelOmega = Math.max(1, Math.abs(forwardSpeed)) / drivetrain.wheelRadius;
+  const rpm = clamp((wheelOmega * gearRatio * 60) / (2 * Math.PI), drivetrain.idleRpm, drivetrain.redlineRpm);
+  const engineTorque = torqueCurve(rpm) * input.throttle;
+  const driveForce = (engineTorque * gearRatio * drivetrain.drivetrainEfficiency) / drivetrain.wheelRadius;
+  const brakingForce = input.brake * car.brakeForce;
   const drag = car.drag * speed * speed;
   const rolling = car.rollingResistance * speed;
 
-  const gripBase = clamp(1 - speed / 85, 0.35, 1.05);
-  const handbrakeGrip = input.handbrake ? 0.35 : 1;
-  const grip = gripBase * handbrakeGrip;
+  const accelLong = (driveForce - brakingForce) / car.mass;
+  const weightTransfer = (accelLong * car.mass * 0.48) / car.wheelBase;
+  const staticLoad = (car.mass * 9.81) / 2;
+  const loadFront = clamp(staticLoad - weightTransfer, staticLoad * 0.45, staticLoad * 1.55);
+  const loadRear = clamp(staticLoad + weightTransfer, staticLoad * 0.45, staticLoad * 1.55);
 
-  const driveForce = traction - braking - drag - rolling;
-  const accel = driveForce / car.mass;
+  const baseGrip = clamp(1 - speed / 95, 0.35, 1.12);
+  const handbrakeGrip = input.handbrake ? 0.55 : 1;
+  const grip = baseGrip * handbrakeGrip;
+  const mu = 1.05 * grip;
 
-  car.velocity.x += forward.x * accel * dt;
-  car.velocity.y += forward.y * accel * dt;
+  const maxLong = mu * (loadFront + loadRear);
+  const longitudinalForce = clamp(driveForce - brakingForce, -maxLong, maxLong) - drag - rolling;
 
-  const lateralSpeed = car.velocity.x * lateral.x + car.velocity.y * lateral.y;
-  const lateralFriction = -lateralSpeed * grip * 4.2;
+  const cornerStiffness = 5.3;
+  const yawVelFront = car.yawRate * car.wheelBase * 0.5;
+  const yawVelRear = car.yawRate * car.wheelBase * 0.5;
+  const slipAngleFront = Math.atan2(lateralSpeed + yawVelFront, Math.max(1, Math.abs(forwardSpeed))) - steerAngle;
+  const slipAngleRear = Math.atan2(lateralSpeed - yawVelRear, Math.max(1, Math.abs(forwardSpeed)));
+  const lateralFront = -cornerStiffness * slipAngleFront * loadFront;
+  const lateralRear = -cornerStiffness * slipAngleRear * loadRear;
+  const desiredLateral = lateralFront + lateralRear;
 
-  car.velocity.x += lateral.x * lateralFriction * dt;
-  car.velocity.y += lateral.y * lateralFriction * dt;
+  const maxLateral = mu * (loadFront + loadRear);
+  const lateralForce = clamp(desiredLateral, -maxLateral, maxLateral);
 
-  const turnRadius = car.wheelBase / Math.max(0.05, Math.abs(Math.sin(steerAngle)));
-  const yawRate = (speed / turnRadius) * Math.sign(steerAngle) * grip;
+  const accelX = (forward.x * longitudinalForce + lateral.x * lateralForce) / car.mass;
+  const accelY = (forward.y * longitudinalForce + lateral.y * lateralForce) / car.mass;
 
-  car.heading += yawRate * dt;
+  car.velocity.x += accelX * dt;
+  car.velocity.y += accelY * dt;
+
+  const yawMoment = (lateralFront * car.wheelBase * 0.5) - (lateralRear * car.wheelBase * 0.5);
+  car.yawRate += (yawMoment / (car.mass * car.wheelBase)) * dt;
+  car.yawRate *= clamp(1 - dt * 1.6, 0.2, 1);
+  car.heading += car.yawRate * dt;
 
   car.position.x += car.velocity.x * dt;
   car.position.y += car.velocity.y * dt;
 
-  updateGear(speed * 3.6);
+  updateGear(speed * 3.6, rpm);
 
   hudSpeed.textContent = Math.max(0, Math.round(speed * 3.6));
   hudGear.textContent = car.gear;
+  hudRpm.textContent = Math.round(rpm);
   hudGrip.textContent = grip.toFixed(2);
+  hudSlip.textContent = Math.abs(lateralSpeed / Math.max(1, speed)).toFixed(2);
+  hudYaw.textContent = car.yawRate.toFixed(2);
   hudBiome.textContent = biomeAt(car.position.x, car.position.y).name;
 };
 
-const updateGear = (speedKmh) => {
+const updateGear = (speedKmh, rpm) => {
   let gear = car.gear;
-  if (gear < gears.length && speedKmh > gears[gear - 1].max) {
+  if (gear < drivetrain.gearbox.length && rpm > drivetrain.redlineRpm * 0.92) {
     gear += 1;
-  } else if (gear > 1 && speedKmh < gears[gear - 2].max * 0.7) {
+  } else if (gear > 1 && speedKmh < 32 * gear) {
     gear -= 1;
   }
   car.gear = gear;
